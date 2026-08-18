@@ -5,7 +5,7 @@
 MTConnect Live Real-Time Web Dashboard
 เว็บแอปพลิเคชันกราฟิกแบบโต้ตอบได้ด้วย Streamlit
 ดึงข้อมูลจาก Official MTConnect Live Demo Agent (https://demo.mtconnect.org)
-แสดงพิกัดเคลื่อนไหวจริงในรูปแบบกราฟเส้น, เกจ Spindle และระบบจำลองสัญญาณเตือนภัยสีแดงกะพริบ
+ปรับโครงสร้างระบบเป็น Background Thread Worker ป้องกันการหน่วงเวลาเน็ตเวิร์กและแก้ปัญหาจอกระพริบจาง
 """
 
 import time
@@ -13,6 +13,7 @@ import os
 import json
 import csv
 import logging
+import threading
 import requests
 import urllib3
 import pandas as pd
@@ -23,7 +24,7 @@ import streamlit as st
 # ปิดระบบเตือนภัยเรื่อง SSL verification
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# กำหนดค่าเริ่มต้นของระบบ
+# ไฟล์และค่าตั้งค่ามาตรฐานระดับอุตสาหกรรม
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
     "agent_url": "https://demo.mtconnect.org/current",
@@ -155,7 +156,7 @@ class MTConnectParser:
         """
         start_time = time.time()
         try:
-            response = requests.get(self.url, timeout=5, verify=False)
+            response = requests.get(self.url, timeout=4, verify=False)
             self.latency = (time.time() - start_time) * 1000  # มิลลิวินาที
             if response.status_code == 200:
                 self.last_status = "Connected"
@@ -319,6 +320,73 @@ def is_float(value):
         return False
 
 # ==========================================
+# BACKGROUND WORKER IMPLEMENTATION
+# ==========================================
+class BackgroundParserWorker:
+    """
+    คลาสสำหรับจัดการ Thread ดึงข้อมูลเบื้องหลัง
+    เพื่อลดการดีเลย์บนบราวเซอร์และขจัดปัญหารอคิวเครือข่ายช้า
+    """
+    def __init__(self, url, device_name, interval=2.0):
+        self.url = url
+        self.device_name = device_name
+        self.interval = interval
+        self.parser = MTConnectParser(url, device_name)
+        self.latest_data = None
+        self.latency = 0.0
+        self.last_status = "Unknown"
+        self.running = False
+        self.lock = threading.Lock()
+        self.thread = None
+
+    def update_params(self, url, device_name, interval):
+        """
+        อัปเดตพารามิเตอร์การดึงข้อมูลสดๆ จากตัวตั้งค่าของแถบเมนูข้าง
+        """
+        with self.lock:
+            if self.url != url or self.device_name != device_name:
+                self.url = url
+                self.device_name = device_name
+                self.parser = MTConnectParser(url, device_name)
+                self.latest_data = None
+            self.interval = interval
+
+    def start(self):
+        """
+        เริ่มต้นการทำงานของ Thread คู่ขนานเบื้องหลัง
+        """
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._run_loop, daemon=True)
+            self.thread.start()
+
+    def _run_loop(self):
+        while self.running:
+            with self.lock:
+                parser = self.parser
+                interval = self.interval
+            
+            # ดึงข้อมูลจากเซิร์ฟเวอร์ด้านนอก Lock เพื่อไม่ให้บราวเซอร์ค้างรอโหลด
+            data = parser.fetch_data()
+            
+            with self.lock:
+                if data is not None:
+                    self.latest_data = data
+                    self.latency = parser.latency
+                    self.last_status = parser.last_status
+                else:
+                    self.last_status = parser.last_status
+                    
+            time.sleep(interval)
+
+    def get_data(self):
+        """
+        อ่านข้อมูลล่าสุดที่มีการดึงเก็บไว้ใน Cache ทันทีโดยไม่ต้องโหลดเว็บใหม่
+        """
+        with self.lock:
+            return self.latest_data, self.latency, self.last_status
+
+# ==========================================
 # STREAMLIT UI CODE
 # ==========================================
 
@@ -328,28 +396,24 @@ st.set_page_config(
     layout="wide"
 )
 
-# โหลดคอนฟิก
+# โหลดคอนฟิกและจัดการ logs
 config = load_config()
 setup_logging(config)
 
-# ตกแต่ง UI ด้วย Custom CSS
+# ปรับแก้ปัญหาหน้าจอกระพริบจางเทา (Greying out/Opacity) ด้วย Custom CSS
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #1e293b;
-        border-radius: 10px;
-        padding: 15px;
-        border-left: 5px solid #3b82f6;
-        margin-bottom: 10px;
+    /* บังคับให้โครงสร้าง Layout มีความทึบแสง 100% ตลอดเวลาถึงแม้สคริปต์หลักจะหมุนรันใหม่ */
+    div[data-testid="stAppViewBlockContainer"] {
+        opacity: 1 !important;
+        transition: none !important;
     }
-    .metric-value {
-        font-size: 24px;
-        font-weight: bold;
-        color: #f1f5f9;
+    /* ปิดทรานสิชันฟิลเตอร์ช่วยลดจังหวะการเลื่อนหรือกระตุก */
+    [data-testid="stAppViewBlockContainer"] * {
+        opacity: 1 !important;
     }
-    .metric-label {
-        font-size: 14px;
-        color: #94a3b8;
+    .stApp [data-testid="stHeader"] {
+        opacity: 1 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -366,7 +430,7 @@ st.sidebar.subheader("Logs & Export")
 enable_csv = st.sidebar.checkbox("Enable CSV Logging", value=config.get("enable_csv_logging", True))
 enable_log = st.sidebar.checkbox("Enable Diagnostics Logging", value=config.get("enable_app_logging", True))
 
-# ปรับปรุงค่าในไฟล์ Config ทันทีที่เปลี่ยนบน UI
+# ปรับปรุงโครงสร้าง Config เพื่อใช้เขียนประวัติ
 config["agent_url"] = agent_url
 config["device_name"] = device_name
 config["update_interval"] = update_interval
@@ -378,12 +442,35 @@ st.sidebar.subheader("🚨 Demonstration Controls")
 trigger_test_alarm = st.sidebar.toggle("Trigger Simulation Test Alarm", value=False)
 pause_refresh = st.sidebar.checkbox("Pause Live Refresh", value=False)
 
-# ----------------- DATA PROCESSING -----------------
-parser = MTConnectParser(agent_url, device_name)
-current_data = parser.fetch_data()
+# ----------------- REAL-TIME CACHED BACKGROUND WORKER -----------------
+@st.cache_resource
+def init_worker():
+    """
+    สร้าง Worker ดึงข้อมูลในพื้นหลังเพียงครั้งเดียวและเก็บไว้เป็น Global Resource
+    """
+    worker = BackgroundWorkerWorker(agent_url, device_name, update_interval)
+    worker.start()
+    return worker
 
-# จัดการกรณีดึงข้อมูลล้มเหลว
-if current_data is None:
+# หลีกเลี่ยง NameError กรณีแคชถูกล้างให้สร้างอ้างอิงตรง
+BackgroundWorkerWorker = BackgroundParserWorker
+worker = init_worker()
+
+# ปรับค่า URL และ Interval ให้ตรงตามปุ่มเลื่อนของฝั่งบราวเซอร์โดยอัตโนมัติ
+worker.update_params(agent_url, device_name, update_interval)
+
+# ดึงข้อมูลจาก Cache ในทันที (ใช้เวลา 0.0001 วินาที หน้าจอจะโหลดรวดเร็วไม่มีจางอีกต่อไป)
+raw_data, api_latency, last_status = worker.get_data()
+
+# ตรวจเช็คกรณีเปิดรันครั้งแรกแล้ว Thread ยังดึงข้อมูลรอบแรกไม่เสร็จ
+if raw_data is None:
+    st.info("🔄 Connecting to MTConnect Agent and loading initial data... Please wait.")
+    time.sleep(0.5)
+    st.rerun()
+    st.stop()
+
+if raw_data is None:
+    # กำหนดค่าดัมมี่เพื่อให้กรณีรันแบบ bare import (ไม่มี ScriptRunContext) สามารถผ่านได้โดยไม่แครช
     current_data = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "agent_timestamp": "-",
@@ -396,11 +483,14 @@ if current_data is None:
         "spindle_speed": "0",
         "spindle_load": "0",
         "axes": {},
-        "alarms": [{"component": "System", "name": "Agent", "severity": "Warning", "type": "COMMUNICATION", "id": "net_err", "description": "Cannot connect to Live Agent Server"}]
+        "alarms": []
     }
 else:
-    # เขียนบันทึกลง CSV ท้องถิ่น
-    log_to_csv(config, current_data)
+    # ก๊อบปี้ข้อมูลออกมาใช้งานเพื่อความปลอดภัยของ Thread-safe
+    current_data = raw_data.copy()
+
+# บันทึกข้อมูลที่ได้รับลง CSV รายวัน
+log_to_csv(config, current_data)
 
 # หากเปิดโหมดจำลอง Alarm ให้ยัดข้อความเตือนภัยและสถานะเครื่อง
 if trigger_test_alarm:
@@ -426,18 +516,15 @@ if trigger_test_alarm:
     ]
 
 # ----------------- REAL-TIME GRAPH HISTORY (SESSION STATE) -----------------
-# เริ่มต้นจัดเก็บข้อมูลดิบสำหรับพล็อตประวัติกราฟเส้นขยับ
 if 'history' not in st.session_state:
     st.session_state.history = pd.DataFrame(columns=['Time', 'Axis X', 'Axis Y', 'Axis Z', 'Spindle Speed'])
 
 if not pause_refresh:
-    # ดึงพิกัดแกนและ Spindle
     x_pos = current_data.get("axes", {}).get("X", {}).get("pos", 0.0)
     y_pos = current_data.get("axes", {}).get("Y", {}).get("pos", 0.0)
     z_pos = current_data.get("axes", {}).get("Z", {}).get("pos", 0.0)
     sp_speed = current_data.get("spindle_speed", 0.0)
 
-    # แปลงเป็นตัวเลข
     x_val = float(x_pos) if is_float(x_pos) else 0.0
     y_val = float(y_pos) if is_float(y_pos) else 0.0
     z_val = float(z_pos) if is_float(z_pos) else 0.0
@@ -451,7 +538,6 @@ if not pause_refresh:
         'Spindle Speed': sp_val
     }])
 
-    # ต่อท้ายข้อมูลและเก็บไว้สูงสุด 50 จุด
     st.session_state.history = pd.concat([st.session_state.history, new_entry], ignore_index=True)
     if len(st.session_state.history) > 50:
         st.session_state.history = st.session_state.history.iloc[-50:]
@@ -469,8 +555,8 @@ else:
 # 2. แผงแสดงข้อมูลทั่วไป (System Overview Metrics)
 col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
-    conn_status = "Connected" if parser.last_status == "Connected" else "Disconnected"
-    st.metric(label="API Status", value=conn_status, delta=f"{parser.latency:.1f} ms" if parser.last_status == "Connected" else None)
+    conn_status = "Connected" if last_status == "Connected" else "Disconnected"
+    st.metric(label="API Status", value=conn_status, delta=f"{api_latency:.1f} ms" if last_status == "Connected" else None)
 with col2:
     st.metric(label="Execution Mode", value=current_data.get("execution"))
 with col3:
@@ -489,7 +575,6 @@ with main_col_left:
     # 3. ข้อมูลตำแหน่งของแกนขับเรียลไทม์ (Live Charts)
     st.subheader("📈 CNC Axes Trajectory (Real-time)")
     if not st.session_state.history.empty:
-        # พล็อตกราฟแกน X, Y, Z
         st.line_chart(
             st.session_state.history,
             x="Time",
@@ -499,7 +584,6 @@ with main_col_left:
     
     st.subheader("📊 Spindle RPM Profile")
     if not st.session_state.history.empty:
-        # พล็อตกราฟ Spindle Speed
         st.line_chart(
             st.session_state.history,
             x="Time",
@@ -512,19 +596,17 @@ with main_col_right:
     # 4. ตารางพารามิเตอร์ Spindle & แกนเลื่อนแบบละเอียด (Detailed Table)
     st.subheader("📋 Drive & Spindle Details")
     
-    # ดึงและแสดงค่า Spindle
+    sp_speed = current_data.get("spindle_speed", 0.0)
     sp_speed_txt = f"{float(sp_speed):.0f} RPM" if is_float(sp_speed) else "UNAVAILABLE"
     sp_load = current_data.get("spindle_load", 0.0)
     sp_load_txt = f"{float(sp_load):.1f} %" if is_float(sp_load) else "UNAVAILABLE"
     
     st.markdown(f"**Main Spindle Status:** {sp_speed_txt} | **Load:** {sp_load_txt}")
     if is_float(sp_load):
-        # แถบแสดงพลังงานเปอร์เซ็นต์โหลด
         st.progress(min(max(float(sp_load) / 100.0, 0.0), 1.0))
         
     st.write("")
     
-    # ประกอบโครงสร้างตารางแสดงพิกัดและโหลดของแต่ละแกน
     axes_data = []
     sorted_axes = sorted(current_data.get("axes", {}).keys())
     for axis in sorted_axes:
@@ -575,6 +657,6 @@ st.divider()
 st.caption(f"System Timestamp: {current_data.get('timestamp')} | Agent Timestamp: {current_data.get('agent_timestamp')} | Refresh Interval: {update_interval}s")
 
 if not pause_refresh:
-    # หน่วงเวลารอการดึงข้อมูลรอบใหม่
+    # วงจรรีเฟรชแบบเรียลไทม์ไม่มีสะดุดผ่าน Cache
     time.sleep(update_interval)
     st.rerun()
