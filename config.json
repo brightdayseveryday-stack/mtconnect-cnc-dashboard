@@ -1,0 +1,9 @@
+{
+    "agent_url": "https://demo.mtconnect.org/current",
+    "update_interval": 2.0,
+    "device_name": "Mazak",
+    "enable_csv_logging": true,
+    "csv_log_path": "data/machine_data.csv",
+    "enable_app_logging": true,
+    "app_log_path": "logs/app.log"
+}
