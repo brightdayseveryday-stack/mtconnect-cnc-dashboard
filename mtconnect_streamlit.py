@@ -319,6 +319,92 @@ def is_float(value):
     except (ValueError, TypeError):
         return False
 
+def render_circular_gauge(value, label, max_val=100.0, color="#3b82f6"):
+    """
+    สร้างรูปภาพเกจวงกลมเรืองแสงสไตล์กล่องขีดเกมสำหรับแสดง Spindle Load (เริ่มที่ 6.00 น. ตามเข็ม)
+    """
+    pct = min(max(float(value) / max_val, 0.0), 1.0) if is_float(value) else 0.0
+    r = 55  # รัศมีวงกลม
+    circ = 2 * 3.14159265 * r  # เส้นรอบวง ~345.57
+    offset = circ * (1.0 - pct)
+    
+    val_num = float(value) if is_float(value) else 0.0
+    
+    # เปลี่ยนสีไฟเกจตามช่วงความเข้มข้นของโหลด
+    if val_num > 80.0:
+        color = "#ef4444"  # สีแดงเรืองแสงเข้มข้น (โหลดหนักเกินพิกัด)
+    elif val_num > 50.0:
+        color = "#f59e0b"  # สีส้มทองความปลอดภัย
+    else:
+        color = "#10b981"  # สีเขียวเรืองแสงปกติ
+        
+    svg = f"""
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 10px;">
+        <svg width="150" height="150" viewBox="0 0 150 150">
+            <defs>
+                <!-- หน้ากากใช้สำหรับหั่นเส้นทึบให้เป็นขีดสั้นๆ สลับช่องว่าง (Segmented Mask) -->
+                <mask id="load-gauge-mask">
+                    <circle cx="75" cy="75" r="{r}" stroke="white" stroke-width="14" fill="transparent"
+                        stroke-dasharray="10 3" />
+                </mask>
+            </defs>
+            <!-- 1. วงกลมขีดพื้นหลังสีเข้ม (แสดงช่องว่าง) -->
+            <circle cx="75" cy="75" r="{r}" stroke="#1e293b" stroke-width="12" fill="transparent"
+                stroke-dasharray="10 3" transform="rotate(90 75 75)" />
+            <!-- 2. วงกลมขีดสว่างเรืองแสง (รันตามเข็มจาก 6.00 น.) -->
+            <circle cx="75" cy="75" r="{r}" stroke="{color}" stroke-width="14" fill="transparent"
+                stroke-dasharray="{circ}" stroke-dashoffset="{offset}"
+                mask="url(#load-gauge-mask)"
+                transform="rotate(90 75 75)"
+                style="transition: stroke-dashoffset 0.5s ease, stroke 0.5s ease; filter: drop-shadow(0px 0px 5px {color}cc);" />
+            <!-- ตัวเลขตรงกลาง -->
+            <text x="75" y="82" fill="{color}" font-size="22" font-weight="bold" text-anchor="middle">{val_num:.1f}%</text>
+        </svg>
+        <div style="color:#94a3b8; font-size:14px; font-weight:bold; margin-top:5px;">{label}</div>
+    </div>
+    """
+    return svg
+
+def render_speed_gauge(value, label, max_val=12000.0, color="#38bdf8"):
+    """
+    สร้างรูปภาพเกจวงกลมเรืองแสงสไตล์กล่องขีดเกมสำหรับแสดง Spindle Speed (เริ่มที่ 6.00 น. ตามเข็ม)
+    """
+    pct = min(max(float(value) / max_val, 0.0), 1.0) if is_float(value) else 0.0
+    r = 55  # รัศมีวงกลม
+    circ = 2 * 3.14159265 * r  # เส้นรอบวง ~345.57
+    offset = circ * (1.0 - pct)
+    
+    val_num = float(value) if is_float(value) else 0.0
+    val_str = f"{val_num:.0f}" if is_float(value) else "0"
+    
+    svg = f"""
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 10px;">
+        <svg width="150" height="150" viewBox="0 0 150 150">
+            <defs>
+                <!-- หน้ากากใช้สำหรับหั่นเส้นทึบให้เป็นขีดสั้นๆ สลับช่องว่าง (Segmented Mask) -->
+                <mask id="speed-gauge-mask">
+                    <circle cx="75" cy="75" r="{r}" stroke="white" stroke-width="14" fill="transparent"
+                        stroke-dasharray="10 3" />
+                </mask>
+            </defs>
+            <!-- 1. วงกลมขีดพื้นหลังสีเข้ม (แสดงช่องว่าง) -->
+            <circle cx="75" cy="75" r="{r}" stroke="#1e293b" stroke-width="12" fill="transparent"
+                stroke-dasharray="10 3" transform="rotate(90 75 75)" />
+            <!-- 2. วงกลมขีดสว่างเรืองแสง (รันตามเข็มจาก 6.00 น.) -->
+            <circle cx="75" cy="75" r="{r}" stroke="{color}" stroke-width="14" fill="transparent"
+                stroke-dasharray="{circ}" stroke-dashoffset="{offset}"
+                mask="url(#speed-gauge-mask)"
+                transform="rotate(90 75 75)"
+                style="transition: stroke-dashoffset 0.5s ease; filter: drop-shadow(0px 0px 5px {color}cc);" />
+            <!-- ตัวเลขและข้อความตรงกลาง -->
+            <text x="75" y="78" fill="{color}" font-size="18" font-weight="bold" text-anchor="middle">{val_str}</text>
+            <text x="75" y="96" fill="currentColor" font-size="11" font-weight="bold" text-anchor="middle">RPM</text>
+        </svg>
+        <div style="color:#94a3b8; font-size:14px; font-weight:bold; margin-top:5px;">{label}</div>
+    </div>
+    """
+    return svg
+
 # ==========================================
 # BACKGROUND WORKER IMPLEMENTATION
 # ==========================================
@@ -437,6 +523,23 @@ config["update_interval"] = update_interval
 config["enable_csv_logging"] = enable_csv
 config["enable_app_logging"] = enable_log
 
+# เพิ่มปุ่มดาวน์โหลดไฟล์รายงานประวัติ CSV
+if enable_csv:
+    csv_path = config.get("csv_log_path", "data/machine_data.csv")
+    if os.path.exists(csv_path):
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                csv_data = f.read()
+            st.sidebar.download_button(
+                label="📥 Download CSV History",
+                data=csv_data,
+                file_name="cnc_machine_data.csv",
+                mime="text/csv",
+                help="ดาวน์โหลดไฟล์รายงานประวัติพิกัดตำแหน่งแกนและโหลดเครื่องจักรลงเครื่องคอมพิวเตอร์ของคุณ"
+            )
+        except Exception:
+            pass
+
 # สวิตช์จำลองสถานะสัญญาณเตือน (Simulation Test Mode)
 st.sidebar.subheader("🚨 Demonstration Controls")
 trigger_test_alarm = st.sidebar.toggle("Trigger Simulation Test Alarm", value=False)
@@ -496,6 +599,8 @@ log_to_csv(config, current_data)
 if trigger_test_alarm:
     current_data["execution"] = "CRITICAL_FAULT"
     current_data["controller_mode"] = "ALARM_STOP"
+    current_data["spindle_load"] = "87.5"
+    current_data["spindle_speed"] = "11200.0"
     current_data["alarms"] = [
         {
             "component": "Rotary",
@@ -597,13 +702,14 @@ with main_col_right:
     st.subheader("📋 Drive & Spindle Details")
     
     sp_speed = current_data.get("spindle_speed", 0.0)
-    sp_speed_txt = f"{float(sp_speed):.0f} RPM" if is_float(sp_speed) else "UNAVAILABLE"
     sp_load = current_data.get("spindle_load", 0.0)
-    sp_load_txt = f"{float(sp_load):.1f} %" if is_float(sp_load) else "UNAVAILABLE"
     
-    st.markdown(f"**Main Spindle Status:** {sp_speed_txt} | **Load:** {sp_load_txt}")
-    if is_float(sp_load):
-        st.progress(min(max(float(sp_load) / 100.0, 0.0), 1.0))
+    # วาดเกจวัดวงกลมเรืองแสงสไตล์เกม (Spindle Speed & Load Gauges)
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        st.markdown(render_speed_gauge(sp_speed, "Main Spindle Speed"), unsafe_allow_html=True)
+    with col_g2:
+        st.markdown(render_circular_gauge(sp_load, "Main Spindle Load"), unsafe_allow_html=True)
         
     st.write("")
     
